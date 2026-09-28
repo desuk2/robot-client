@@ -1,12 +1,33 @@
-# Godot
-.godot/
-*.import
+# Unity
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]serSettings/
+/[Mm]emoryCaptures/
+[Uu]serSettings.txt
+*.csproj
+*.sln
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
 
-# C# / .NET
-.mono/
+# MonoDevelop / VS Code
+.idea/
+.vscode/
+*.csproj.unitypackage
+
+# C# / .NET leftovers
 bin/
 obj/
-*.user
 
 # Игровые ассеты — запрещены в репозитории
 /assets/                  # папка ассетов целиком (внешний источник, см. ARCHITECTURE.md)

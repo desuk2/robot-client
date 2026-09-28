@@ -1,0 +1,17 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!129 &1
+PlayerSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 26
+  productGUID: 8f8b0f9d0d0f4d2d9e2c6e1b2a3c4d5e
+  companyName: RobotGames
+  productName: RobotClient
+  defaultScreenWidth: 1280
+  defaultScreenHeight: 720
+  fullscreenMode: 3
+  runInBackground: 1
+  resizableWindow: 1
+  usePlayerLog: 1
+  activeInputHandler: 0
+  allowUnsafeCode: 0
