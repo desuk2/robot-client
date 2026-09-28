@@ -1,0 +1,40 @@
+# Godot
+.godot/
+*.import
+
+# C# / .NET
+.mono/
+bin/
+obj/
+*.user
+
+# Игровые ассеты — запрещены в репозитории
+/assets/                  # папка ассетов целиком (внешний источник, см. ARCHITECTURE.md)
+*.glb
+*.fbx
+*.dae
+*.obj
+*.blend
+*.png
+*.jpg
+*.jpeg
+*.tga
+*.exr
+*.hdr
+*.ktx2
+*.wav
+*.ogg
+*.mp3
+
+# OSM-дампы — не хранить в git
+*.osm
+*.osm.pbf
+*.pbf
+
+# Окружение — локальные конфиги не хранить в git
+.env
+.env.*
+*.local
+
+# OS
+.DS_Store
