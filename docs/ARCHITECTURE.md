@@ -1,6 +1,6 @@
 # Архитектура robot-client
 
-Версия: 0.3 (Unity 6.3 LTS, сетевой срез + визуализация)
+Версия: 0.4 (Unity 6.3 LTS, сетевой срез + заказы)
 Дата: 2026-09-28
 
 ## 1. Цель
@@ -33,8 +33,8 @@ robot-client/
 │   ├── Scenes/Main.unity         # Bootstrap-сцена с MonoBehaviour GameSession
 │   └── Scripts/
 │       ├── Protocol.cs           # DTO v1 (JsonUtility, public fields, snake_case)
-│       ├── NetworkClient.cs      # WebSocket: auth/welcome/error/input/snapshot
-│       └── Bootstrap/GameSession.cs  # мир, ввод, drain снапшотов, HUD
+│       ├── NetworkClient.cs      # WebSocket: auth/welcome/error/input/snapshot + order.*/reward.*
+│       └── Bootstrap/GameSession.cs  # мир, ввод, drain снапшотов, заказы, HUD
 ├── docs/
 └── .gitignore                    # Library/Temp/Obj/Logs/UserSettings, авто-*.csproj/*.sln, ассеты, OSM
 ```
@@ -73,8 +73,9 @@ YAML-сцена `Main.unity` корректно ссылалась на `GameSes
 
 ### Текущий срез
 
-- `NetworkClient` шлёт `auth` и `input` (`{ "move": { "x": .., "z": .. } }`),
-  принимает `welcome`, `error`, `snapshot`.
+- `NetworkClient` шлёт `auth`, `input` (`{ "move": { "x": .., "z": .. } }`),
+  `order.accept` и `order.deliver` (`{ "order_id": ".." }`); принимает
+  `welcome`, `error`, `snapshot`, `order.updated`, `reward.granted`.
 - `GameSession` читает WASD/стрелки и шлёт `input` **не чаще** `tick_rate`
   (из `welcome`); на изменение посылается одно сообщение (сервер хранит
   последний ввод между тиками).
@@ -82,8 +83,20 @@ YAML-сцена `Main.unity` корректно ссылалась на `GameSes
   - `pos.x/z` — напрямую; `pos.y` сервера всегда `0`, визуально куб поднят до `0.75`
     (половина высоты 1.5), чтобы «стоять» на плоскости;
   - `yaw` сервера — радианы (`0` = +Z, `π/2` = +X) → `Quaternion.Euler(0, yaw*Rad2Deg, 0)`.
+- Цикл «заказ → доставка → награда»:
+  - после `welcome` сервер шлёт `order.updated` — клиент рисует маркеры:
+    зелёный цилиндр в точке `origin` (забор), золотой — в `destination` (сдача);
+  - `E` (edge-triggered) шлёт `order.accept`; авто-забор у `origin` происходит
+    на сервере — клиент получает `order.updated` с `picked_up=true` и показывает
+    грузовой куб над роботом;
+  - `F` (edge-triggered) шлёт `order.deliver`; при успехе приходит
+    `reward.granted` (награда + новый баланс) и `order.updated` с новым заказом —
+    маркеры переезжают; при ошибке (`too_far`, `order_not_in_progress`, ...)
+    приходит `error`, соединение остаётся открытым;
+  - дистанции до `origin`/`destination` и баланс кошелька выводятся в HUD.
 - Мир отрисовывается процедурно (`Plane`-примитив 100×100, `Cube`-робот,
-  направленный свет, flat ambient), камера и HUD (`OnGUI`) создаются в коде.
+  `Cylinder`-маркеры заказа, `Cube`-груз, направленный свет, flat ambient),
+  камера и HUD (`OnGUI`) создаются в коде.
 
 ## 6. Prediction / interpolation
 
@@ -128,10 +141,11 @@ YAML-сцена `Main.unity` корректно ссылалась на `GameSes
 | **2 — Контроллер** (частично) | движение робота, камеры FPS/third-person, переключение | управление работает; в срезе — ввод + позиция из снапшотов |
 | **3 — Сеть** (частично) | WebSocket, auth/welcome, heartbeat, реконнект | подключение к серверу, поток снапшотов; heartbeat/reconnect — план |
 | 4 — Pred/Interp | prediction своего робота, интерполяция чужих | двое роботов плавно двигаются |
-| 5 — Карта | приём тайлов, рендер дорог, коллизии | карта сервера отображается |
-| 6 — UI | HUD заказов, мини-карта, инвентарь, магазин модов | полный цикл заказа из UI |
-| 7 — Полировка | анимации, звук, эффекты, offline-режим | сборка-кандидат |
-| 8 — Интеграция | совместные тесты с robot-srv, beta | публичная beta |
+| **5 — Заказы** (частично) | приём `order.updated`, маркеры origin/destination, `E`/`F`, cargo, награды | полный цикл «заказ → доставка → награда» в HUD и сцене |
+| 6 — Карта | приём тайлов, рендер дорог, коллизии | карта сервера отображается |
+| 7 — UI | HUD заказов, мини-карта, инвентарь, магазин модов | полный цикл заказа из UI |
+| 8 — Полировка | анимации, звук, эффекты, offline-режим | сборка-кандидат |
+| 9 — Интеграция | совместные тесты с robot-srv, beta | публичная beta |
 
 ## 11. Ограничения Unity-среза
 
@@ -148,11 +162,14 @@ YAML-сцена `Main.unity` корректно ссылалась на `GameSes
 1. `cargo test` в robot-srv — зелёные.
 2. `cargo run` сервера + `curl /healthz`.
 3. Открыть проект в Unity 6.3 LTS, Play сцены `Main.unity`.
-4. Консоль Unity: `connected` → `welcome ... tick=20Hz`.
+4. Консоль Unity: `connected` → `welcome ... tick=20Hz`; затем `order.updated`.
 5. HUD: снапшоты, `W` → `moving`/`speed≈5`, `pos.z` растёт; отпускание → `idle`.
 6. `D` → yaw растёт к 90°, движение по +X.
-7. Остановка сервера → HUD `disconnected`, без падения Unity.
-8. `git diff --check`, отсутствие Godot-ссылок и бинарных ассетов.
+7. `E` → `status=in_progress`, авто-забор: `cargo=picked up`, груз над роботом.
+8. Доехать к золотому маркеру, `F` → `reward.granted`, `wallet` растёт, новый заказ.
+9. `F` вдали → `error` (`too_far`), соединение живо.
+10. Остановка сервера → HUD `disconnected`, без падения Unity.
+11. `git diff --check`, отсутствие Godot-ссылок и бинарных ассетов.
 
 ## 13. Глоссарий
 

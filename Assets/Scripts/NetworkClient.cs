@@ -59,6 +59,12 @@ namespace RobotClient.Net
         /// <summary>Raised when a world <c>snapshot</c> arrives.</summary>
         public event Action<SnapshotMessage>? SnapshotReceived;
 
+        /// <summary>Raised when the order state changes (<c>order.updated</c>).</summary>
+        public event Action<OrderUpdatedMessage>? OrderUpdatedReceived;
+
+        /// <summary>Raised when a delivery reward is granted (<c>reward.granted</c>).</summary>
+        public event Action<RewardGrantedMessage>? RewardGrantedReceived;
+
         /// <summary>Raised when the connection is closed (reason for logging).</summary>
         public event Action<string>? Disconnected;
 
@@ -132,9 +138,52 @@ namespace RobotClient.Net
         }
 
         /// <summary>
+        /// Send an <c>order.accept</c> message for <paramref name="orderId"/>.
+        /// The server rejects the action with an <c>error</c> envelope when the
+        /// order is not <c>available</c>; the connection stays open.
+        /// </summary>
+        /// <returns>
+        /// <c>true</c> when the envelope was sent; <c>false</c> when the
+        /// socket is not open or no <c>welcome</c> was received yet.
+        /// </returns>
+        public async Task<bool> SendOrderAcceptAsync(string orderId, CancellationToken ct = default)
+        {
+            return await SendOrderActionAsync(Protocol.TypeOrderAccept, orderId, ct);
+        }
+
+        /// <summary>
+        /// Send an <c>order.deliver</c> message for <paramref name="orderId"/>.
+        /// The server validates proximity to the destination and grants the
+        /// reward on success (<c>reward.granted</c>), otherwise replies with
+        /// an <c>error</c> envelope; the connection stays open.
+        /// </summary>
+        /// <returns>
+        /// <c>true</c> when the envelope was sent; <c>false</c> when the
+        /// socket is not open or no <c>welcome</c> was received yet.
+        /// </returns>
+        public async Task<bool> SendOrderDeliverAsync(string orderId, CancellationToken ct = default)
+        {
+            return await SendOrderActionAsync(Protocol.TypeOrderDeliver, orderId, ct);
+        }
+
+        private async Task<bool> SendOrderActionAsync(string type, string orderId, CancellationToken ct)
+        {
+            if (!IsWelcomed || !IsConnected || string.IsNullOrWhiteSpace(orderId))
+            {
+                return false;
+            }
+
+            var payload = new OrderActionPayload { order_id = orderId };
+            await SendAsync(type, Json.ToJson(payload), ct);
+            return true;
+        }
+
+        /// <summary>
         /// Read server messages until the connection closes or the token is
         /// cancelled. Raises <see cref="WelcomeReceived"/>,
-        /// <see cref="ErrorReceived"/> and <see cref="SnapshotReceived"/>.
+        /// <see cref="ErrorReceived"/>, <see cref="SnapshotReceived"/>,
+        /// <see cref="OrderUpdatedReceived"/> and
+        /// <see cref="RewardGrantedReceived"/>.
         /// </summary>
         public async Task RunAsync(CancellationToken ct = default)
         {
@@ -254,6 +303,22 @@ namespace RobotClient.Net
                     if (snapshot is not null)
                     {
                         SnapshotReceived?.Invoke(snapshot);
+                    }
+                    break;
+
+                case Protocol.TypeOrderUpdated:
+                    var order = FromPayload<OrderUpdatedMessage>(payloadJson);
+                    if (order is not null)
+                    {
+                        OrderUpdatedReceived?.Invoke(order);
+                    }
+                    break;
+
+                case Protocol.TypeRewardGranted:
+                    var reward = FromPayload<RewardGrantedMessage>(payloadJson);
+                    if (reward is not null)
+                    {
+                        RewardGrantedReceived?.Invoke(reward);
                     }
                     break;
 

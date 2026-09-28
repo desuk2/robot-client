@@ -32,6 +32,18 @@ namespace RobotClient.Net
 
         /// <summary>Server → client: world snapshot.</summary>
         public const string TypeSnapshot = "snapshot";
+
+        /// <summary>Client → server: accept the order (id = payload.order_id).</summary>
+        public const string TypeOrderAccept = "order.accept";
+
+        /// <summary>Client → server: deliver the order (id = payload.order_id).</summary>
+        public const string TypeOrderDeliver = "order.deliver";
+
+        /// <summary>Server → client: order state changed (accepted / picked up / new order).</summary>
+        public const string TypeOrderUpdated = "order.updated";
+
+        /// <summary>Server → client: reward granted after a delivery + wallet balance.</summary>
+        public const string TypeRewardGranted = "reward.granted";
     }
 
     /// <summary>
@@ -129,6 +141,67 @@ namespace RobotClient.Net
         public double x;
         public double y;
         public double z;
+    }
+
+    /// <summary>Client → server <c>order.accept</c> / <c>order.deliver</c> payload.</summary>
+    [Serializable]
+    public sealed class OrderActionPayload
+    {
+        /// <summary>Id of the order to accept or deliver.</summary>
+        public string order_id = "";
+    }
+
+    /// <summary>
+    /// Server → client <c>order.updated</c> payload. Mirrors the flat wire
+    /// shape of robot-srv <c>OrderUpdatedPayload</c> one-to-one.
+    /// </summary>
+    [Serializable]
+    public sealed class OrderUpdatedMessage
+    {
+        /// <summary>Order identifier.</summary>
+        public string id = "";
+
+        /// <summary>Cargo pickup point (server keeps <c>y = 0</c>).</summary>
+        public Vec3 origin = new Vec3();
+
+        /// <summary>Delivery point (server keeps <c>y = 0</c>).</summary>
+        public Vec3 destination = new Vec3();
+
+        /// <summary>Lifecycle status: <c>available</c> | <c>in_progress</c> | <c>completed</c>.</summary>
+        public string status = "";
+
+        /// <summary>Whether the cargo was picked up (auto-pickup near the origin).</summary>
+        public bool picked_up;
+    }
+
+    /// <summary>A single granted reward (robot-srv <c>economy::Reward</c>).</summary>
+    [Serializable]
+    public sealed class Reward
+    {
+        public long credits;
+        public long xp;
+    }
+
+    /// <summary>Player balance after a grant (robot-srv <c>economy::Wallet</c>).</summary>
+    [Serializable]
+    public sealed class Wallet
+    {
+        public long credits;
+        public long xp;
+    }
+
+    /// <summary>Server → client <c>reward.granted</c> payload.</summary>
+    [Serializable]
+    public sealed class RewardGrantedMessage
+    {
+        /// <summary>Id of the order that was completed.</summary>
+        public string order_id = "";
+
+        /// <summary>The reward just granted.</summary>
+        public Reward reward = new Reward();
+
+        /// <summary>The player's balance after granting.</summary>
+        public Wallet wallet = new Wallet();
     }
 
     /// <summary>

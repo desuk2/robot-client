@@ -20,6 +20,9 @@ namespace RobotClient.Bootstrap
     ///   robot cube strictly from server state (no client-side prediction);
     /// - read WASD/arrows and send <c>input</c> no more often than the server
     ///   tick rate announced in <c>welcome</c>;
+    /// - drive the order → delivery → reward loop: markers for the order
+    ///   origin/destination, a cargo indicator, edge-triggered
+    ///   <c>E</c> (accept) / <c>F</c> (deliver), and a wallet in the HUD;
     /// - render the world procedurally (plane + cube, sun, ambient light,
     ///   third-person follow camera) and draw a HUD with <c>OnGUI</c>.
     ///
@@ -38,6 +41,9 @@ namespace RobotClient.Bootstrap
 
         /// <summary>Visual Y offset for the robot cube: half of its 1.5 height.</summary>
         private const float RobotY = 0.75f;
+
+        /// <summary>Interaction radius advertised by the server (orders, pickup/delivery).</summary>
+        private const float InteractRadius = 2f;
 
         private NetworkClient? _client;
         private CancellationTokenSource? _cts;
@@ -59,6 +65,24 @@ namespace RobotClient.Bootstrap
         private bool _hasSentInput;
         private bool _wasWelcomed;
 
+        // Order + economy state shared between the network and main threads.
+        private readonly object _orderLock = new object();
+        private bool _hasOrder;
+        private string _orderId = "";
+        private string _orderStatus = "-";
+        private bool _orderPickedUp;
+        private Vector3 _orderOrigin;
+        private Vector3 _orderDestination;
+        private long _walletCredits;
+        private long _walletXp;
+        private bool _hasWallet;
+        private string _lastRewardLabel = "";
+
+        // Visual markers (main thread only).
+        private Transform? _originMarker;
+        private Transform? _destinationMarker;
+        private Transform? _cargoCube;
+
         // Last rendered state for the HUD (written on the main thread only).
         private bool _hudHasSnapshot;
         private long _hudTick;
@@ -77,6 +101,8 @@ namespace RobotClient.Bootstrap
             _client.WelcomeReceived += OnWelcome;
             _client.ErrorReceived += OnError;
             _client.SnapshotReceived += OnSnapshot;
+            _client.OrderUpdatedReceived += OnOrderUpdated;
+            _client.RewardGrantedReceived += OnRewardGranted;
             _client.Disconnected += OnDisconnected;
 
             _cts = new CancellationTokenSource();
@@ -89,7 +115,9 @@ namespace RobotClient.Bootstrap
         private void Update()
         {
             DrainSnapshot();
+            DrainOrder();
             SendInput();
+            SendOrderActions();
             UpdateCamera();
         }
 
@@ -144,6 +172,19 @@ namespace RobotClient.Bootstrap
             SetMaterialColor(robotGo, new Color(0.85f, 0.42f, 0.16f));
             _robot = robotGo.transform;
 
+            // Order markers: pickup point (green) and delivery point (gold).
+            // Both are hidden until the first `order.updated` arrives.
+            _originMarker = BuildCylinderMarker("OrderOrigin", new Color(0.25f, 0.8f, 0.35f), 0.35f);
+            _destinationMarker = BuildCylinderMarker("OrderDestination", new Color(1f, 0.72f, 0.15f), 0.7f);
+
+            // Cargo crate shown above the robot while the cargo is picked up.
+            var cargoGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cargoGo.name = "Cargo";
+            cargoGo.transform.localScale = new Vector3(0.5f, 0.5f, 0.5f);
+            SetMaterialColor(cargoGo, new Color(0.75f, 0.55f, 0.2f));
+            _cargoCube = cargoGo.transform;
+            _cargoCube.gameObject.SetActive(false);
+
             // Third-person follow camera (created in code; no Main Camera in the scene).
             var cameraGo = new GameObject("FollowCamera");
             _camera = cameraGo.AddComponent<Camera>();
@@ -176,6 +217,21 @@ namespace RobotClient.Bootstrap
             var material = new Material(shader);
             material.color = color;
             renderer.sharedMaterial = material;
+        }
+
+        /// <summary>
+        /// Build a flat cylinder marker (the Cylinder primitive is 1 unit
+        /// wide and 2 units tall; <paramref name="scaleY"/> scales the height
+        /// so the top is readable from the third-person camera).
+        /// </summary>
+        private static Transform BuildCylinderMarker(string name, Color color, float scaleY)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            go.name = name;
+            go.transform.localScale = new Vector3(1.4f, scaleY, 1.4f);
+            SetMaterialColor(go, color);
+            go.SetActive(false);
+            return go.transform;
         }
 
         /// <summary>
@@ -213,6 +269,107 @@ namespace RobotClient.Bootstrap
             _hudState = entity.state;
             _hudSpeed = (float)entity.speed;
             _hudHasSnapshot = true;
+        }
+
+        /// <summary>
+        /// Apply the latest order state on the main thread: position the
+        /// origin/destination markers and show/hide the cargo crate above the
+        /// robot while the cargo is picked up.
+        /// </summary>
+        private void DrainOrder()
+        {
+            bool hasOrder;
+            bool pickedUp;
+            Vector3 origin;
+            Vector3 destination;
+            lock (_orderLock)
+            {
+                hasOrder = _hasOrder;
+                pickedUp = _orderPickedUp;
+                origin = _orderOrigin;
+                destination = _orderDestination;
+            }
+
+            if (_originMarker != null)
+            {
+                // Cylinder base sits on the ground; y = half of its scaled height.
+                _originMarker.position = origin + Vector3.up * 0.35f;
+                _originMarker.gameObject.SetActive(hasOrder);
+            }
+            if (_destinationMarker != null)
+            {
+                _destinationMarker.position = destination + Vector3.up * 0.7f;
+                _destinationMarker.gameObject.SetActive(hasOrder);
+            }
+            if (_cargoCube != null)
+            {
+                bool showCargo = hasOrder && pickedUp && _robot != null;
+                if (_cargoCube.gameObject.activeSelf != showCargo)
+                {
+                    _cargoCube.gameObject.SetActive(showCargo);
+                }
+                if (showCargo && _robot != null)
+                {
+                    // The crate floats just above the robot's body.
+                    _cargoCube.position = _robot.position + Vector3.up * 1.3f;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Edge-triggered order actions: <c>E</c> accepts the current order,
+        /// <c>F</c> attempts delivery. The server validates the action and
+        /// replies with <c>order.updated</c> or an <c>error</c>; the
+        /// connection is never torn down.
+        /// </summary>
+        private void SendOrderActions()
+        {
+            if (_client is null || !_wasWelcomed)
+            {
+                return;
+            }
+
+            string orderId;
+            lock (_orderLock)
+            {
+                orderId = _orderId;
+            }
+            if (string.IsNullOrEmpty(orderId))
+            {
+                return;
+            }
+
+            if (Input.GetKeyDown(KeyCode.E))
+            {
+                SendOrderActionFireAndForget(Protocol.TypeOrderAccept, orderId);
+            }
+            if (Input.GetKeyDown(KeyCode.F))
+            {
+                SendOrderActionFireAndForget(Protocol.TypeOrderDeliver, orderId);
+            }
+        }
+
+        private async void SendOrderActionFireAndForget(string type, string orderId)
+        {
+            try
+            {
+                if (_client is null)
+                {
+                    return;
+                }
+                // NetworkClient itself gates on welcome and open socket.
+                bool sent = type == Protocol.TypeOrderAccept
+                    ? await _client.SendOrderAcceptAsync(orderId)
+                    : await _client.SendOrderDeliverAsync(orderId);
+                if (sent)
+                {
+                    Debug.Log($"[GameSession] {type} sent for {orderId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[GameSession] {type} send failed: {ex.Message}");
+            }
         }
 
         /// <summary>Read WASD/arrows and send <c>input</c> at most once per tick interval.</summary>
@@ -317,8 +474,25 @@ namespace RobotClient.Bootstrap
                 connection = _connectionLabel;
             }
 
-            GUI.Box(new Rect(8, 8, 470, 150), GUIContent.none);
-            GUILayout.BeginArea(new Rect(16, 14, 450, 140));
+            string orderId, orderStatus, lastReward;
+            bool pickedUp, hasWallet;
+            long credits, xp;
+            Vector3 origin, destination;
+            lock (_orderLock)
+            {
+                orderId = _orderId;
+                orderStatus = _orderStatus;
+                pickedUp = _orderPickedUp;
+                origin = _orderOrigin;
+                destination = _orderDestination;
+                credits = _walletCredits;
+                xp = _walletXp;
+                hasWallet = _hasWallet;
+                lastReward = _lastRewardLabel;
+            }
+
+            GUI.Box(new Rect(8, 8, 470, 240), GUIContent.none);
+            GUILayout.BeginArea(new Rect(16, 14, 450, 230));
             if (_hudHasSnapshot)
             {
                 GUILayout.Label($"tick={_hudTick}  id={_hudId}");
@@ -330,6 +504,27 @@ namespace RobotClient.Bootstrap
                 GUILayout.Label("no snapshot yet");
             }
             GUILayout.Label(connection);
+
+            GUILayout.Space(4);
+            if (!string.IsNullOrEmpty(orderId))
+            {
+                GUILayout.Label($"order={orderId}  status={orderStatus}");
+                GUILayout.Label($"cargo={(pickedUp ? "picked up" : "not picked up")}");
+                GUILayout.Label(
+                    $"dist origin={Vector3.Distance(_hudPos, origin):F1}  " +
+                    $"dist destination={Vector3.Distance(_hudPos, destination):F1}  " +
+                    $"(interact < {InteractRadius:F0})");
+                GUILayout.Label("E = accept order   F = deliver order");
+            }
+            else
+            {
+                GUILayout.Label("no order yet (waiting for order.updated)");
+            }
+            GUILayout.Label($"wallet: {(hasWallet ? $"{credits} cr / {xp} xp" : "—")}");
+            if (!string.IsNullOrEmpty(lastReward))
+            {
+                GUILayout.Label($"last reward: {lastReward}");
+            }
             GUILayout.EndArea();
         }
 
@@ -410,6 +605,34 @@ namespace RobotClient.Bootstrap
             {
                 _pendingSnapshot = snapshot;
             }
+        }
+
+        private void OnOrderUpdated(OrderUpdatedMessage order)
+        {
+            lock (_orderLock)
+            {
+                _hasOrder = true;
+                _orderId = order.id;
+                _orderStatus = order.status;
+                _orderPickedUp = order.picked_up;
+                _orderOrigin = new Vector3((float)order.origin.x, 0f, (float)order.origin.z);
+                _orderDestination = new Vector3((float)order.destination.x, 0f, (float)order.destination.z);
+            }
+            Debug.Log($"[GameSession] order.updated: id={order.id}, status={order.status}, " +
+                      $"picked_up={order.picked_up}");
+        }
+
+        private void OnRewardGranted(RewardGrantedMessage reward)
+        {
+            lock (_orderLock)
+            {
+                _walletCredits = reward.wallet.credits;
+                _walletXp = reward.wallet.xp;
+                _hasWallet = true;
+                _lastRewardLabel = $"+{reward.reward.credits} cr  +{reward.reward.xp} xp ({reward.order_id})";
+            }
+            Debug.Log($"[GameSession] reward.granted: +{reward.reward.credits} cr, " +
+                      $"+{reward.reward.xp} xp -> wallet {reward.wallet.credits} cr / {reward.wallet.xp} xp");
         }
 
         private void OnDisconnected(string reason)
