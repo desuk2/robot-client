@@ -116,8 +116,8 @@ public partial class Main : Node
     {
         // Camera: elevated behind the robot, looking at the world center.
         var camera = new Camera3D { Position = new Vector3(0, 45, -45) };
-        camera.LookAt(Vector3.Zero, Vector3.Up);
         AddChild(camera);
+        camera.LookAt(Vector3.Zero, Vector3.Up);
 
         // Ground: a 100x100 plane covering the -50..50 world bounds.
         var ground = new MeshInstance3D
